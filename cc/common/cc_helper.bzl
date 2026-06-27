@@ -1071,16 +1071,26 @@ def _expand_single_make_variable(ctx, token, additional_make_variable_substituti
     expanded_var = _expand_nested_variable(ctx, additional_make_variable_substitutions, unexpanded_var)
     return expanded_var
 
-def _defines_attribute(ctx, additional_make_variable_substitutions, attr_name, additional_targets):
+def _defines_attribute(ctx, feature_configuration, additional_make_variable_substitutions, attr_name, additional_targets):
     defines = getattr(ctx.attr, attr_name, [])
     if len(defines) == 0:
         return []
+
+    # Defines are user-provided compile strings, so honor no_copts_tokenization
+    # the same way copts do (see _get_copts): when the feature is enabled, skip
+    # Bourne tokenization and emit each (make-variable-expanded) entry as a single
+    # literal -D token. This keeps quoted string macros such as FOO="bar" intact
+    # without backslash-escaping, so generated BUILD files stay readable.
+    tokenization = not (feature_configuration.is_enabled(feature_names.NO_COPTS_TOKENIZATION) or feature_names.NO_COPTS_TOKENIZATION in ctx.features)
     targets = list(additional_targets)
     for dep in ctx.attr.deps:
         targets.append(dep)
     result = []
     for define in defines:
         expanded_define = _expand(ctx, define, additional_make_variable_substitutions, targets = targets)
+        if not tokenization:
+            result.append(expanded_define)
+            continue
         tokens = []
         _tokenize(tokens, expanded_define)
         if len(tokens) == 1:
@@ -1092,11 +1102,11 @@ def _defines_attribute(ctx, additional_make_variable_substitutions, attr_name, a
 
     return result
 
-def _defines(ctx, additional_make_variable_substitutions):
-    return _defines_attribute(ctx, additional_make_variable_substitutions, "defines", [])
+def _defines(ctx, feature_configuration, additional_make_variable_substitutions):
+    return _defines_attribute(ctx, feature_configuration, additional_make_variable_substitutions, "defines", [])
 
-def _local_defines(ctx, additional_make_variable_substitutions):
-    return _defines_attribute(ctx, additional_make_variable_substitutions, "local_defines", getattr(ctx.attr, "additional_compiler_inputs", []))
+def _local_defines(ctx, feature_configuration, additional_make_variable_substitutions):
+    return _defines_attribute(ctx, feature_configuration, additional_make_variable_substitutions, "local_defines", getattr(ctx.attr, "additional_compiler_inputs", []))
 
 def _calculate_artifact_label_map(attr_list, attr_name):
     """
