@@ -278,6 +278,53 @@ def _filter_libraries_that_are_linked_dynamically(ctx, feature_configuration, cc
         CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = depset(sorted_linker_inputs, order = "preorder"))),
     ] + cc_runtimes_infos).linking_context
 
+def _gn_ifs_stub(ctx, binary):
+    """Extracts a linkable ELF interface stub of a linkshared output.
+
+    gn2bazel tags a .so wrapper cc_binary with gn_ifs_stub=<path to llvm-ifs>.
+    The stub reproduces the SONAME and dynamic symbol table (names, types,
+    sizes, weak/strong binding, TLS, versions) with no code, so its bytes
+    change only when the export surface changes. Consumers link the stub
+    instead of the real .so (gn2bazel's <so>_ifs filegroup selects the
+    gn_ifs_stub output group), so a body-only relink of the .so reproduces a
+    byte-identical stub and every consumer link is an action-cache hit - the
+    content-addressed equivalent of ninja's .TOC + restat relink pruning.
+
+    Runs locally: the tool is an unstaged host binary named by the tag.
+    Returns the stub File, or None when the target is not linkshared or
+    carries no gn_ifs_stub tag.
+    """
+    if not _is_link_shared(ctx):
+        return None
+    tool = None
+    prefix = "gn_ifs_stub="
+    for tag in ctx.attr.tags:
+        if tag.startswith(prefix):
+            tool = tag[len(prefix):]
+            break
+    if not tool:
+        return None
+    # Not "<so>.ifs": clang's driver takes that extension for an interface stub
+    # text file and drops it from the link instead of passing it to the linker.
+    stub = ctx.actions.declare_file(binary.basename + ".ifs.so", sibling = binary)
+    args = ctx.actions.args()
+    args.add("--input-format=ELF")
+    args.add(stub, format = "--output-elf=%s")
+    args.add(binary)
+    ctx.actions.run(
+        executable = tool,
+        arguments = [args],
+        inputs = [binary],
+        outputs = [stub],
+        mnemonic = "GnIfsStub",
+        progress_message = "Extracting interface stub of " + binary.basename,
+        execution_requirements = {
+            "no-remote": "1",
+            "no-sandbox": "1",
+        },
+    )
+    return stub
+
 def _gn_two_phase_front(ctx, deps_cc_linking_context):
     """Returns the linker_inputs of the deps named by gn_link_direct=, or None.
 
@@ -855,6 +902,10 @@ def cc_binary_impl(ctx, additional_linkopts, force_linkstatic = False):
 
     if copied_runtime_dynamic_libraries != None:
         output_groups["runtime_dynamic_libraries"] = copied_runtime_dynamic_libraries
+
+    ifs_stub = _gn_ifs_stub(ctx, binary)
+    if ifs_stub != None:
+        output_groups["gn_ifs_stub"] = depset([ifs_stub])
 
     # TODO(b/198254254): SetRunfilesSupport if needed.
     debug_package_info = DebugPackageInfo(
