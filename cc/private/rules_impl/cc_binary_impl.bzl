@@ -272,8 +272,10 @@ def _filter_libraries_that_are_linked_dynamically(ctx, feature_configuration, cc
     cc_runtimes = cc_helper.get_cc_runtimes(ctx, _is_link_shared(ctx))
     cc_runtimes_infos = [dep[CcInfo] for dep in cc_runtimes if CcInfo in dep]
 
+    # merge_cc_infos merges linker_inputs in preorder, and a depset cannot mix
+    # orders. A preorder depset keeps the direct elements in list order.
     return cc_common.merge_cc_infos(direct_cc_infos = [
-        CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = depset(sorted_linker_inputs, order = "topological"))),
+        CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = depset(sorted_linker_inputs, order = "preorder"))),
     ] + cc_runtimes_infos).linking_context
 
 def _create_transitive_linking_actions(

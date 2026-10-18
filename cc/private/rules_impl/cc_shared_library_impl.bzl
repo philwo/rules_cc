@@ -200,8 +200,11 @@ def _separate_static_and_dynamic_link_libraries(
     return (targets_to_be_linked_statically_map, targets_to_be_linked_dynamically_set, topologically_sorted_labels, all_dynamic_dep_linker_inputs)
 
 def _create_linker_context(linker_inputs):
+    # The link merges this context into preorder linker_inputs (see
+    # merge_linking_contexts), and a depset cannot mix orders. A preorder depset
+    # keeps the direct elements in list order.
     return cc_common.create_linking_context(
-        linker_inputs = depset(linker_inputs, order = "topological"),
+        linker_inputs = depset(linker_inputs, order = "preorder"),
     )
 
 def _merge_cc_shared_library_infos(ctx):
@@ -366,7 +369,9 @@ def _filter_inputs(
         dependency_linker_inputs_sets.append(dep[CcInfo].linking_context.linker_inputs)
         deps_root_tree_nodes.append(dep[GraphNodeInfo])
 
-    dependency_linker_inputs = depset(transitive = dependency_linker_inputs_sets, order = "topological").to_list()
+    # Linking contexts hold preorder linker_inputs (see merge_linking_contexts),
+    # and a depset cannot mix orders.
+    dependency_linker_inputs = depset(transitive = dependency_linker_inputs_sets, order = "preorder").to_list()
 
     can_be_linked_dynamically = {}
     for linker_input in dependency_linker_inputs:

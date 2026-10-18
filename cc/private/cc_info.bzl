@@ -271,7 +271,13 @@ def create_linking_context(
 def merge_linking_contexts(*, linking_contexts):
     """Merges a list of CcLinkingContextInfo providers.
     """
-    linker_inputs = depset(transitive = [ctx.linker_inputs for ctx in linking_contexts], order = "topological")
+
+    # gn2bazel: preorder (NAIVE_LINK_ORDER), not topological. GN's link line is a
+    # preorder DFS over public_deps then private_deps with first-occurrence dedup
+    # (ComputeInheritedLibs); a preorder depset over the same per-target dep order
+    # reproduces it. --start-group/--end-group (emitted by the toolchain) covers the
+    # back-references that topological order would otherwise reorder to satisfy.
+    linker_inputs = depset(transitive = [ctx.linker_inputs for ctx in linking_contexts], order = "preorder")
     extra_link_time_libraries = merge_extra_link_time_libraries([ctx._extra_link_time_libraries for ctx in linking_contexts if ctx._extra_link_time_libraries != None])
     return CcLinkingContextInfo(
         linker_inputs = linker_inputs,

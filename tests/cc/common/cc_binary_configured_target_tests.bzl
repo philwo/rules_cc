@@ -768,6 +768,8 @@ def _test_linkopts_diamond(name, **kwargs):
     )
 
 def _test_linkopts_diamond_impl(env, target):
+    # gn2bazel links in preorder (GN's link DFS), so core follows lib1, its first
+    # dependent, instead of coming after every library that depends on it.
     link_action = link_action_subject.from_target(env, target)
     link_action.argv().contains_at_least([
         "-z",
@@ -775,9 +777,9 @@ def _test_linkopts_diamond_impl(env, target):
         "-z",
         "lib1",
         "-z",
-        "lib2",
-        "-z",
         "core",
+        "-z",
+        "lib2",
     ]).in_order()
 
 def _test_linkopts_fake_diamond(name, **kwargs):

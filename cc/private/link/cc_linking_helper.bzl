@@ -401,7 +401,8 @@ def _maybe_link_transitively(feature_configuration, dynamic_link_type, linking_m
 
     linker_inputs = depset(
         transitive = [linking_context.linker_inputs for linking_context in linking_contexts],
-        order = "topological",
+        # gn2bazel: preorder to reproduce GN's link DFS (see merge_linking_contexts).
+        order = "preorder",
     ).to_list()
     if dynamic_link_type != LINK_TARGET_TYPE.NODEPS_DYNAMIC_LIBRARY:
         linkstamps = [stamp for linker_input in linker_inputs for stamp in linker_input.linkstamps]
@@ -415,7 +416,7 @@ def _maybe_link_transitively(feature_configuration, dynamic_link_type, linking_m
     # subtle breakages.
     libraries_to_link = depset(
         [lib for linker_input in linker_inputs for lib in linker_input.libraries],
-        order = "topological",
+        order = "preorder",
     ).to_list()
 
     return libraries_to_link, linkstamps, linkopts, non_code_inputs
