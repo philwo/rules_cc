@@ -331,6 +331,12 @@ transitive deps) are only used for compilation of this library, and not librarie
 depend on it. Libraries specified with <code>implementation_deps</code> are still linked in
 binary targets that depend on this library.
 """),
+        # gn2bazel: header-only deps. Their compilation context (headers/includes)
+        # is merged for this target's compiles and re-exported to dependents, but
+        # their linking context is NOT propagated — so they contribute no linker
+        # inputs and never perturb link order. Used to satisfy the include scanner
+        # for headers owned by a target reached only transitively in the link graph.
+        "gn_header_deps": attr.label_list(providers = [CcInfo], allow_files = False),
         "strip_include_prefix": attr.string(doc = """
 The prefix to strip from the paths of the headers of this rule.
 

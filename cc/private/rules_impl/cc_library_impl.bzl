@@ -47,7 +47,12 @@ def _cc_library_impl(ctx):
     _check_no_repeated_srcs(ctx)
 
     semantics.check_can_use_implementation_deps(ctx)
-    interface_deps = ctx.attr.deps + cc_helper.get_cc_runtimes(ctx, True)
+
+    # gn2bazel: gn_header_deps contribute compilation context (headers/includes,
+    # re-exported like deps) but NOT linking context, so they don't perturb link
+    # order. Folded into the public interface_deps for compilation; linking below
+    # uses only ctx.attr.deps / implementation_deps.
+    interface_deps = ctx.attr.deps + ctx.attr.gn_header_deps + cc_helper.get_cc_runtimes(ctx, True)
     runtimes_copts = cc_helper.get_cc_runtimes_copts(ctx)
     compilation_contexts = cc_helper.get_compilation_contexts_from_deps(interface_deps)
     implementation_compilation_contexts = cc_helper.get_compilation_contexts_from_deps(ctx.attr.implementation_deps)

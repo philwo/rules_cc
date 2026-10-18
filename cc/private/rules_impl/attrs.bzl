@@ -342,6 +342,10 @@ for that use case.
         allow_rules = semantics.ALLOWED_RULES_IN_DEPS,
         # TODO(blaze-team): undocumented
     ),
+    # gn2bazel: header-only deps. Their compilation context (headers) feeds this
+    # binary's compiles, but they contribute NO linker inputs and do not perturb
+    # link order (the owner is linked via its real link path elsewhere).
+    "gn_header_deps": attr.label_list(providers = [CcInfo], allow_files = False),
     "linkopts": attr.string_list(doc = """
 Add these flags to the C++ linker command.
 Subject to <a href="make-variables.html">"Make" variable</a> substitution,

@@ -540,7 +540,10 @@ def cc_binary_impl(ctx, additional_linkopts, force_linkstatic = False):
 
     cc_helper.check_cpp_modules(ctx, feature_configuration)
 
-    all_deps = ctx.attr.deps + cc_helper.get_cc_runtimes(ctx, _is_link_shared(ctx))
+    # gn2bazel: gn_header_deps feed the binary's compiles (its srcs #include their
+    # headers) but NOT its link — _collect_linking_context uses ctx.attr.deps only,
+    # so they contribute no linker inputs and don't perturb link order.
+    all_deps = ctx.attr.deps + ctx.attr.gn_header_deps + cc_helper.get_cc_runtimes(ctx, _is_link_shared(ctx))
     compilation_context_deps = [dep[CcInfo].compilation_context for dep in all_deps if CcInfo in dep]
 
     runtimes_copts = cc_helper.get_cc_runtimes_copts(ctx)
