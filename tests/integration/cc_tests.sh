@@ -380,4 +380,80 @@ EOF
   assert_equals 85 "${exit_code}"
 }
 
+# Tests that an alwayslink library's objects from a tree artifact are all
+# linked, even when nothing references them: they must not end up in a lazy
+# --start-lib/--end-lib group that the linker is free to skip.
+function test_alwayslink_tree_artifact_objects_are_linked() {
+  if is_darwin; then
+    echo "Skipping on Mac: compiling tree artifacts needs --start-lib support"
+    return 0;
+  fi
+
+  # Set up an alwayslink library whose only object, from a tree artifact,
+  # registers itself from a static initializer.
+  mkdir -p foo
+  cat > foo/extension.bzl << EOF
+def _cc_tree_artifact_files_impl(ctx):
+    directory = ctx.actions.declare_directory(ctx.attr.name + "_artifact.cc")
+    ctx.actions.run_shell(
+      inputs = ctx.files.srcs,
+      outputs = [directory],
+      mnemonic = "MoveTreeArtifact",
+      use_default_shell_env = True,
+      command = "mkdir -p %s; cp %s %s" % (
+          directory.path,
+          " ".join([f.path for f in ctx.files.srcs]),
+          directory.path,
+      ),
+    )
+    return [DefaultInfo(files = depset([directory]))]
+
+cc_tree_artifact_files = rule(
+    implementation = _cc_tree_artifact_files_impl,
+    attrs = {
+      "srcs": attr.label_list(allow_files=True),
+    },
+)
+EOF
+  cat > foo/BUILD << EOF
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load(":extension.bzl", "cc_tree_artifact_files")
+cc_tree_artifact_files(
+    name = "tree_artifact",
+    srcs = ["registerer.cc"],
+)
+
+cc_library(
+    name = "registerer",
+    srcs = [":tree_artifact"],
+    alwayslink = True,
+)
+
+cc_binary(
+    name = "bin",
+    srcs = ["bin.cc"],
+    deps = [":registerer"],
+)
+EOF
+  cat > foo/registerer.cc << EOF
+extern int registered;
+static int dummy = (registered = 7, 0);
+EOF
+  cat > foo/bin.cc << EOF
+int registered = 0;
+
+int main(void) {
+  return registered;
+}
+EOF
+
+  # Build and run the binary: it exits with 7 only if the static initializer
+  # was linked in.
+  bazel build //foo:bin >& "${TEST_log}" || fail "Build failed"
+  local exit_code=0
+  bazel-bin/foo/bin || exit_code=$?
+  assert_equals 7 "${exit_code}"
+}
+
 run_suite "Integration tests for rules_cc"

@@ -1303,6 +1303,7 @@ def _impl(ctx):
                         flag_groups = [
                             flag_group(
                                 flags = ["-Wl,--start-lib"],
+                                expand_if_false = "libraries_to_link.is_whole_archive",
                                 expand_if_equal = variable_with_value(
                                     name = "libraries_to_link.type",
                                     value = "object_file_group",
@@ -1311,6 +1312,7 @@ def _impl(ctx):
                         ] + libraries_to_link_common_flag_groups + [
                             flag_group(
                                 flags = ["-Wl,--end-lib"],
+                                expand_if_false = "libraries_to_link.is_whole_archive",
                                 expand_if_equal = variable_with_value(
                                     name = "libraries_to_link.type",
                                     value = "object_file_group",

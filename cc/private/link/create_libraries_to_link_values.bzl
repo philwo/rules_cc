@@ -219,9 +219,8 @@ def _add_static_library_to_link(
         if input_is_whole_archive:
             for object in objects:
                 if object.is_directory:
-                    # TODO(b/78189629): This object filegroup is expanded at action time but
-                    # wrapped with --start/--end-lib. There's currently no way to force these
-                    # objects to be linked in.
+                    # The default Unix toolchain links a whole-archive object_file_group
+                    # in full instead of wrapping it in --start-lib/--end-lib.
                     libraries_to_link_values.append(
                         _ObjectFileGroupInfo(
                             type = _TYPE.OBJECT_FILE_GROUP,
