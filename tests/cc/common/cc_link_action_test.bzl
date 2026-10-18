@@ -72,6 +72,8 @@ def _test_linkopts_and_lib_srcs_order_impl(env, target):
         matching.str_matches("-Xlinker *someotherdir"),
     ]).in_order()
 
+# Disabled for gn2bazel, see the test list below.
+# buildifier: disable=unused-variable
 def _test_dynamic_mode_libraries_unaffected_by_legacy_whole_archive(name, **kwargs):
     util.helper_target(
         cc_library,
@@ -463,6 +465,52 @@ def _test_linkopts_for_generated_library_impl(env, target):
         ])
     assert_link_action.argv().contains_at_least_predicates(link_argv_predicates).in_order()
 
+def _test_whole_archive_shared_link_keeps_alwayslink_objects_first(name, **kwargs):
+    util.helper_target(
+        cc_library,
+        name = name + "/archived",
+        srcs = [name + "/archived.cc"],
+        linkstatic = True,
+    )
+
+    util.helper_target(
+        cc_library,
+        name = name + "/sourceset",
+        srcs = [name + "/sourceset.cc"],
+        linkstatic = True,
+        alwayslink = True,
+    )
+
+    util.helper_target(
+        cc_binary,
+        name = name + "/foo.so",
+        deps = [name + "/archived", name + "/sourceset"],
+        linkstatic = True,
+        linkshared = True,
+    )
+
+    cc_analysis_test(
+        name = name,
+        impl = _test_whole_archive_shared_link_keeps_alwayslink_objects_first_impl,
+        target = name + "/foo.so",
+        config_settings = {
+            "//command_line_option:incompatible_remove_legacy_whole_archive": False,
+            "//command_line_option:legacy_whole_archive": True,
+        },
+        **kwargs
+    )
+
+def _test_whole_archive_shared_link_keeps_alwayslink_objects_first_impl(env, target):
+    # GN's solink links source_set objects before static libraries, and
+    # whole-archiving the static libraries doesn't change their position.
+    assert_link_action = env.expect.that_target(target).action_generating(
+        "{package}/{test_name}/foo.so",
+    )
+    assert_link_action.argv().contains_at_least_predicates([
+        matching.str_matches("*/sourceset.*"),
+        matching.str_matches("*archived.*"),
+    ]).in_order()
+
 def _test_cc_library_linkopts_in_shared_library(name, **kwargs):
     util.helper_target(
         cc_library,
@@ -498,7 +546,9 @@ def _test_cc_library_linkopts_in_shared_library_impl(env, target):
 def cc_link_action_tests(name):
     tests = [
         _test_linkopts_and_lib_srcs_order,
-        _test_dynamic_mode_libraries_unaffected_by_legacy_whole_archive,
+        # gn2bazel links alwayslink libraries as loose objects without
+        # -Wl,-whole-archive (GN's object stream), so this test does not apply.
+        # _test_dynamic_mode_libraries_unaffected_by_legacy_whole_archive,
         _test_dynamic_mode_srcs_with_feature,
         _test_dynamic_mode_swrcs_without_feature,
         _test_interface_output_for_dynamic_library,
@@ -510,6 +560,7 @@ def cc_link_action_tests(name):
     ]
     if bazel_features.rules.analysis_tests_can_transition_on_experimental_incompatible_flags:
         tests.append(_test_linkopts_for_generated_library)
+        tests.append(_test_whole_archive_shared_link_keeps_alwayslink_objects_first)
 
     test_suite(
         name = name,

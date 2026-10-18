@@ -424,6 +424,8 @@ def _test_user_link_flags_with_linkopt_option_impl(env, target):
     action = link_action_subject.from_target(env, target)
     action.argv().contains_at_least(["-foo", "-bar"]).in_order()
 
+# Disabled for gn2bazel, see the test list below.
+# buildifier: disable=unused-variable
 def _test_linker_inputs_override_whole_archive(name):
     a_target = name + "_a"
     b_target = name + "_b"
@@ -486,6 +488,8 @@ def _test_linker_inputs_override_whole_archive_impl(env, target):
             "{bindir}/{package}/lib{test_name}_a.lo",
         )
 
+# Disabled for gn2bazel, see the test list below.
+# buildifier: disable=unused-variable
 def _test_cc_import_linker_inputs_override_whole_archive(name):
     a_target = name + "_a"
     b_target = name + "_b"
@@ -597,10 +601,15 @@ def link_build_variables_tests(name):
         _test_is_using_fission_disabled,
         _test_sysroot_variable,
         _test_user_link_flags_with_linkopt_option,
-        _test_linker_inputs_override_whole_archive,
+        # gn2bazel links alwayslink libraries as loose objects without
+        # -Wl,-whole-archive (GN's object stream), so this test does not apply.
+        # _test_linker_inputs_override_whole_archive,
     ]
     if bazel_features.rules.analysis_tests_can_transition_on_experimental_incompatible_flags and bazel_features.cc.cc_common_is_in_rules_cc:
-        tests.append(_test_cc_import_linker_inputs_override_whole_archive)
+        # gn2bazel links alwayslink libraries as loose objects without
+        # -Wl,-whole-archive (GN's object stream), so this test does not apply.
+        # tests.append(_test_cc_import_linker_inputs_override_whole_archive)
+        pass
 
     test_suite(
         name = name,

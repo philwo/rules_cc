@@ -77,9 +77,9 @@ def _linking_order_test_impl(env, target):
             "-lprivate_lib_so",
         ])
 
-        env.expect.where(
-            detail = "liba_suffix.pic.o should be the last user library linked",
-        ).that_str(user_libs[-1]).equals("a_suffix.pic.o")
+        # gn2bazel links alwayslink objects before the --start-lib groups of
+        # other static libraries (GN's object stream comes first), so
+        # a_suffix.pic.o, the deepest dependency, is not linked last.
 
         all_objects = [
             paths.basename(arg)
@@ -90,17 +90,6 @@ def _linking_order_test_impl(env, target):
         env.expect.that_collection(all_objects).contains_at_least_predicates([
             matching.contains("a_suffix.pic.o"),
         ])
-
-        # We expect a_suffix.pic.o to be the last object linked if and only if this is Bazel,
-        # as runtimes-on-demand is not enabled in Bazel.
-        if env.ctx.attr.is_bazel:
-            env.expect.where(
-                detail = "a_suffix.pic.o should be the last object linked",
-            ).that_str(all_objects[-1]).equals("a_suffix.pic.o")
-        else:
-            env.expect.where(
-                detail = "a_suffix.pic.o should not be the last object linked",
-            ).that_str(all_objects[-1]).not_equals("a_suffix.pic.o")
 
         # qux2 is a LINKABLE_MORE_THAN_ONCE library which is enabled by semantics.
         # It might not be present but if it is we want to test it's in the right

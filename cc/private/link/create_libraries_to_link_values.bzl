@@ -71,6 +71,15 @@ def add_object_files_to_link(object_files, libraries_to_link_values):
                 ),
             )
 
+def _is_static_lib(library, prefer_static_libs):
+    return (prefer_static_libs and
+            (library.static_library != None or library.pic_static_library != None) or
+            (library.interface_library == None and library.dynamic_library == None))
+
+def _is_whole_archive(library, need_whole_archive):
+    # library._disable_whole_archive should only be true for libstdc++/libc++ etc.
+    return not library._disable_whole_archive and (library.alwayslink or need_whole_archive)
+
 def add_libraries_to_link(
         libraries,
         prefer_static_libs,
@@ -131,20 +140,46 @@ def add_libraries_to_link(
         None
     """
 
-    # For static libraries:
-    static_library_files = set()
-
     # For dynamic libraries
     windows_with_interface_shared_libraries = (
         feature_configuration.is_enabled("targets_windows") and
         feature_configuration.is_enabled("supports_interface_shared_libraries")
     )
 
+    # gn2bazel two-stream emission matching GN's link line. GN emits the binary's
+    # own objects (added before this call), then every source_set's loose objects
+    # (the object stream), then every static_library .a (the archive stream).
+    # source_sets map to whole-archive (alwayslink) cc_libraries; emitting their
+    # loose objects first means a source compiled into both a source_set and a
+    # static_library is defined by the source_set's object before the
+    # static_library's duplicate member is considered, so there is no
+    # double-define. Dynamic libraries are emitted with the archive stream (the
+    # toolchain re-collects them after --end-group).
+
+    # Object stream: alwayslink static libraries contribute their loose object
+    # files (all included, like GN's loose source_set objects), in link order.
+    # need_whole_archive doesn't move a library here: GN's solink wraps all of
+    # its inputs in --whole-archive, but its static libraries still follow the
+    # source_set objects.
     for library in libraries:
-        static_lib = (prefer_static_libs and
-                      (library.static_library != None or library.pic_static_library != None) or
-                      (library.interface_library == None and library.dynamic_library == None))
-        if static_lib:
+        if _is_static_lib(library, prefer_static_libs) and \
+           _is_whole_archive(library, False) and library._contains_objects:
+            _add_whole_archive_objects(
+                library,
+                prefer_pic_libs,
+                lto_map,
+                allow_lto_indexing,
+                shared_non_lto_obj_root_prefix,
+                expanded_linker_inputs,
+                libraries_to_link_values,
+            )
+
+    # Archive + dynamic stream.
+    static_library_files = set()
+    for library in libraries:
+        if _is_static_lib(library, prefer_static_libs):
+            if _is_whole_archive(library, False) and library._contains_objects:
+                continue  # already emitted in the object stream
             pic = (prefer_pic_libs and library.pic_static_library != None) or \
                   library.static_library == None
             library_file = library.pic_static_library if pic else library.static_library
@@ -153,19 +188,50 @@ def add_libraries_to_link(
                 # TODO(b/413333884): Clean up cc_library.src -> cc_library and error out
                 continue
             static_library_files.add(library_file)
-            _add_static_library_to_link(
-                library,
-                prefer_pic_libs,
-                use_start_end_lib,
-                need_whole_archive,
-                # For LTO in static libs:
-                lto_map,
-                allow_lto_indexing,
-                shared_non_lto_obj_root_prefix,
-                # Outputs:
-                expanded_linker_inputs,
-                libraries_to_link_values,
-            )
+
+            if _is_whole_archive(library, need_whole_archive) and library._contains_objects:
+                # A library whole-archived only for this link (legacy_whole_archive
+                # on a shared link) links all of its loose objects in its own
+                # archive-stream position.
+                _add_whole_archive_objects(
+                    library,
+                    prefer_pic_libs,
+                    lto_map,
+                    allow_lto_indexing,
+                    shared_non_lto_obj_root_prefix,
+                    expanded_linker_inputs,
+                    libraries_to_link_values,
+                )
+            elif use_start_end_lib and library._contains_objects:
+                # Pass the library's loose objects in a --start-lib/--end-lib group instead
+                # of consuming the fat .a. The objects are already declared Bazel artifacts
+                # (the .a's own inputs), so they are present at link time, and --start-lib
+                # keeps archive semantics (objects pulled only to resolve undefined
+                # symbols). This drops the .a out of the link's input closure, so its
+                # CppArchive action (e.g. an ~80s multi-GB object copy for blink core)
+                # never runs. Reached only on the executable link: when need_whole_archive
+                # is set, object-bearing libs are emitted whole by the branch above
+                # instead.
+                _add_start_lib_objects(
+                    library,
+                    prefer_pic_libs,
+                    lto_map,
+                    allow_lto_indexing,
+                    shared_non_lto_obj_root_prefix,
+                    expanded_linker_inputs,
+                    libraries_to_link_values,
+                )
+            else:
+                # The linker lacks --start-lib, or the library is prebuilt (cc_import) and
+                # has no loose objects: pass the .a.
+                libraries_to_link_values.append(
+                    _NamedLibraryInfo(
+                        type = _TYPE.STATIC_LIBRARY,
+                        name = library_file.path,
+                        is_whole_archive = _is_whole_archive(library, need_whole_archive),
+                    ),
+                )
+                expanded_linker_inputs.append(library_file)
         else:
             _add_dynamic_library_to_link(
                 library,
@@ -175,11 +241,9 @@ def add_libraries_to_link(
                 libraries_to_link_values,
             )
 
-def _add_static_library_to_link(
+def _add_whole_archive_objects(
         library,
         prefer_pic_libs,
-        use_start_end_lib,
-        need_whole_archive,
         # For LTO in static libs:
         lto_map,
         allow_lto_indexing,
@@ -187,75 +251,78 @@ def _add_static_library_to_link(
         # Outputs:
         expanded_linker_inputs,
         libraries_to_link_values):
-    # input.disable_whole_archive should only be true for libstdc++/libc++ etc.
-    input_is_whole_archive = not library._disable_whole_archive and (
-        library.alwayslink or need_whole_archive
-    )
+    """Emits a whole-archive (alwayslink) library's loose object files.
 
+    GN links a source_set's objects loosely (all included, no --whole-archive
+    wrapper), so each object becomes its own object_file LibraryToLinkValue with
+    is_whole_archive = False. A tree artifact becomes an object_file_group with
+    is_whole_archive = True, which toolchains link in full instead of wrapping it
+    in a lazy --start-lib/--end-lib group.
+    """
     pic = (prefer_pic_libs and library.pic_static_library != None) or \
           library.static_library == None
-    library_file = library.pic_static_library if pic else library.static_library
     objects = library.pic_objects if pic else library.objects
-
-    # start-lib/end-lib library: adds its input object files.
-    # TODO(bazel-team): Figure out if PicArchives are actually used. For it to be used, both
-    # linkingStatically and linkShared must me true, we must be in opt mode and cpu has to be k8
-    if use_start_end_lib and library._contains_objects:
-        # If we had any LTO artifacts, lto_map whould be non-null. In that case,
-        # we should have created a thinlto_param_file which the LTO indexing
-        # step will populate with the exec paths that correspond to the LTO
-        # artifacts that the linker decided to include based on symbol resolution.
-        # Those files will be included directly in the link (and not wrapped
-        # in --start-lib/--end-lib) to ensure consistency between the two link
-        # steps.
-        objects = process_objects_for_lto(
-            objects,
-            lto_map,
-            allow_lto_indexing,
-            shared_non_lto_obj_root_prefix,
-            expanded_linker_inputs,
-        )
-
-        if input_is_whole_archive:
-            for object in objects:
-                if object.is_directory:
-                    # The default Unix toolchain links a whole-archive object_file_group
-                    # in full instead of wrapping it in --start-lib/--end-lib.
-                    libraries_to_link_values.append(
-                        _ObjectFileGroupInfo(
-                            type = _TYPE.OBJECT_FILE_GROUP,
-                            object_files = (object,),
-                            is_whole_archive = True,
-                        ),
-                    )
-                else:
-                    # TODO(b/78189629): These each need to be their own LibraryToLinkValue so
-                    # they're not wrapped in --start/--end-lib (which lets the linker leave out
-                    # objects with unreferenced code).
-                    libraries_to_link_values.append(
-                        _NamedLibraryInfo(
-                            type = _TYPE.OBJECT_FILE,
-                            name = object.path,
-                            is_whole_archive = True,
-                        ),
-                    )
-        elif objects:
+    objects = process_objects_for_lto(
+        objects,
+        lto_map,
+        allow_lto_indexing,
+        shared_non_lto_obj_root_prefix,
+        expanded_linker_inputs,
+    )
+    for object in objects:
+        if object.is_directory:
             libraries_to_link_values.append(
                 _ObjectFileGroupInfo(
                     type = _TYPE.OBJECT_FILE_GROUP,
-                    object_files = tuple(objects),
+                    object_files = (object,),
+                    is_whole_archive = True,
+                ),
+            )
+        else:
+            libraries_to_link_values.append(
+                _NamedLibraryInfo(
+                    type = _TYPE.OBJECT_FILE,
+                    name = object.path,
                     is_whole_archive = False,
                 ),
             )
-    else:
-        libraries_to_link_values.append(
-            _NamedLibraryInfo(
-                type = _TYPE.STATIC_LIBRARY,
-                name = library_file.path,
-                is_whole_archive = input_is_whole_archive,
-            ),
-        )
-        expanded_linker_inputs.append(library_file)
+
+def _add_start_lib_objects(
+        library,
+        prefer_pic_libs,
+        # For LTO in static libs:
+        lto_map,
+        allow_lto_indexing,
+        shared_non_lto_obj_root_prefix,
+        # Outputs:
+        expanded_linker_inputs,
+        libraries_to_link_values):
+    """Emits a non-whole-archive static library's objects as one --start-lib group.
+
+    The objects replace the fat .a on the link command line as an
+    object_file_group with is_whole_archive = False, which toolchains that support
+    start_end_lib wrap in --start-lib/--end-lib, so the objects keep lazy archive
+    resolution. One group per library preserves the library's member order.
+    """
+    pic = (prefer_pic_libs and library.pic_static_library != None) or \
+          library.static_library == None
+    objects = library.pic_objects if pic else library.objects
+    objects = process_objects_for_lto(
+        objects,
+        lto_map,
+        allow_lto_indexing,
+        shared_non_lto_obj_root_prefix,
+        expanded_linker_inputs,
+    )
+    if not objects:
+        return
+    libraries_to_link_values.append(
+        _ObjectFileGroupInfo(
+            type = _TYPE.OBJECT_FILE_GROUP,
+            object_files = tuple(objects),
+            is_whole_archive = False,
+        ),
+    )
 
 _DYNAMIC_LIBRARY_SUFFIXES = (".so", ".dylib", ".dll", ".pyd")
 
