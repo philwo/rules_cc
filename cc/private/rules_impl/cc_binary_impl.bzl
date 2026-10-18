@@ -278,6 +278,46 @@ def _filter_libraries_that_are_linked_dynamically(ctx, feature_configuration, cc
         CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = depset(sorted_linker_inputs, order = "preorder"))),
     ] + cc_runtimes_infos).linking_context
 
+def _gn_two_phase_front(ctx, deps_cc_linking_context):
+    """Returns the linker_inputs of the deps named by gn_link_direct=, or None.
+
+    gn2bazel's gn_link_direct= tag lists the immediate GN-linkable deps in
+    declaration order. The returned linking context holds those deps' own
+    linker_inputs in that order. It is None when the tag is absent or names no
+    owner of a linker_input in deps_cc_linking_context.
+
+    GN's NinjaBinaryTargetWriter emits a final target's direct linked deps FIRST
+    (declaration order), then the transitive inherited libs in preorder. Merging
+    this context ahead of the full (preorder) deps context, with first-occurrence
+    dedup, reproduces that two-phase order: the same linker_input objects appear
+    in both, so the front occurrence wins. Leaves deps_cc_linking_context (and its
+    _extra_link_time_libraries) untouched.
+    """
+    direct_keys = []
+    prefix = "gn_link_direct="
+    for tag in ctx.attr.tags:
+        if tag.startswith(prefix):
+            val = tag[len(prefix):]
+            if val:
+                direct_keys = val.split(",")
+            break
+    if not direct_keys:
+        return None
+    direct_set = {k: True for k in direct_keys}
+    by_owner = {}
+    for li in deps_cc_linking_context.linker_inputs.to_list():
+        key = "//" + li.owner.package + ":" + li.owner.name
+        if key in direct_set and key not in by_owner:
+            by_owner[key] = li
+    direct_inputs = []
+    for k in direct_keys:
+        li = by_owner.get(k)
+        if li != None:
+            direct_inputs.append(li)
+    if not direct_inputs:
+        return None
+    return cc_common.create_linking_context(linker_inputs = depset(direct_inputs))
+
 def _create_transitive_linking_actions(
         ctx,
         cc_toolchain,
@@ -355,7 +395,16 @@ def _create_transitive_linking_actions(
     )
     current_cc_linking_context = cc_common.create_linking_context(linker_inputs = depset([linker_inputs]))
 
-    cc_info_without_extra_link_time_libraries = cc_common.merge_cc_infos(cc_infos = [CcInfo(linking_context = current_cc_linking_context), deps_cc_info])
+    # gn2bazel two-phase link order: insert the immediate GN-linkable deps' own
+    # libraries ahead of the full (preorder) deps context. Preorder + first-
+    # occurrence dedup then yields GN's "direct linked deps first, then inherited
+    # libs in preorder" link line.
+    gn_front_ctx = _gn_two_phase_front(ctx, deps_cc_linking_context)
+    cc_infos_to_merge = [CcInfo(linking_context = current_cc_linking_context)]
+    if gn_front_ctx != None:
+        cc_infos_to_merge.append(CcInfo(linking_context = gn_front_ctx))
+    cc_infos_to_merge.append(deps_cc_info)
+    cc_info_without_extra_link_time_libraries = cc_common.merge_cc_infos(cc_infos = cc_infos_to_merge)
     extra_link_time_libraries_cc_info = CcInfo(linking_context = cc_common.create_linking_context(linker_inputs = extra_link_time_libraries_depset))
     cc_info = cc_common.merge_cc_infos(cc_infos = [cc_info_without_extra_link_time_libraries, extra_link_time_libraries_cc_info])
     cc_linking_context = cc_info.linking_context
